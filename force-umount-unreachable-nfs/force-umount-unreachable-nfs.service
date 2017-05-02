@@ -1,0 +1,13 @@
+[Unit]
+Description=Force umount of unreachable NFS shares
+Before=xapi-domains.service attach-static-vdis.service
+After=remote-fs.target
+
+[Service]
+RemainAfterExit=true
+Type=oneshot
+ExecStart=/usr/bin/true
+ExecStop=/usr/bin/force-umount-unreachable-nfs
+
+[Install]
+WantedBy=multi-user.target
