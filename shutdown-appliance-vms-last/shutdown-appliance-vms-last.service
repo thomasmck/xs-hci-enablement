@@ -1,0 +1,14 @@
+[Unit]
+Description=Shutdown appliance VMs last
+Before=xapi-domains.service hci-unplug-pbds.service
+After=xapi.service
+
+[Service]
+RemainAfterExit=true
+Type=oneshot
+EnvironmentFile=/etc/xensource-inventory
+ExecStart=/usr/bin/true
+ExecStop=/bin/sh -c "/usr/bin/shutdown-appliance-vms-last $INSTALLATION_UUID || /usr/bin/shutdown-appliance-vms-last --force $INSTALLATION_UUID"
+
+[Install]
+WantedBy=multi-user.target
