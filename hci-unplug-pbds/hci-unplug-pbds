@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+
+# Purpose: Script run as part of dom0 shutdown. Unplugs SRs in HCI
+#          environment, before the appliance VM is shutdown
+# Implementation:
+#  - For all local PBDs that belong to an SRs with the key
+#     other-config:hci-unplug-pbd, we unplug the PBD
+#  - When unplugging NFS SRs, we first test whether the server is
+#     alive. If the server is not alive, we force the umount. This
+#     serves to avoid that systemd times out the shutdown sequence,
+#     due to retries.
+# Also see ATL-9.
+
+
+import inventory
+import os
+import socket
+import subprocess
+import threading
+import XenAPI
+
+DEFAULT_NFS_PORT = 2049
+NFS_TIMEOUT_IN_S = 2
+SR_MOUNT_PATH = "/run/sr-mount"
+
+
+def is_alive(address, port, timeout):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((address, port))
+        sock.send('\n')
+        sock.close()
+    except socket.error as reason:
+        print "is_alive failed for %s: %s" % (address, reason)
+        return False
+    return True
+
+
+def force_umount(path):
+    cmd = ['umount', '-f', path]
+    process = subprocess.Popen(cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        print("%s failed wih rc %d: %s - %s"
+              % (cmd, process.returncode, stdout, stderr))
+
+
+def unplug_pbd(session, session_lock, pbd_ref, pbd_record, sr_record):
+    print "Unplugging PBD %s for SR %s (%s)" % (pbd_record['uuid'],
+                                                sr_record['uuid'],
+                                                sr_record['type'])
+    if sr_record['type'] == 'nfs' and 'server' in pbd_record['device_config']:
+        if not is_alive(pbd_record['device_config']['server'],
+                        DEFAULT_NFS_PORT, NFS_TIMEOUT_IN_S):
+            # Do force umount, so systemd doesn't try until timing out
+            print("Detected that SR %s at %s is not alive - forcing umount"
+                  % (sr_record['uuid'], pbd_record['device_config']['server']))
+            force_umount(os.path.join(SR_MOUNT_PATH, sr_record['uuid']))
+            return
+    session_lock.acquire()
+    try:
+        session.xenapi.PBD.unplug(pbd_ref)
+    finally:
+        session_lock.release()
+
+
+def unplug_local_pbds_with_hci_key(session):
+    host_uuid = inventory.get_localhost_uuid()
+    host_ref = session.xenapi.host.get_by_uuid(host_uuid)
+
+    # Find SRs that may need unplugging
+    sr_records = session.xenapi.SR.get_all_records()
+    srs_to_unplug = dict()
+    for sr_ref, sr_record in sr_records.iteritems():
+        if 'hci-unplug-pbds' in sr_record['other_config']:
+            # Found one
+            srs_to_unplug[sr_ref] = sr_record
+
+    # Return if no SRs to unplug
+    if len(srs_to_unplug) == 0:
+        return
+
+    # Find pbd to trigger unplug
+    pbd_records = session.xenapi.PBD.get_all_records()
+    unplug_threads = list()
+    session_lock = threading.Lock()
+    for pbd_ref, pbd_record in pbd_records.iteritems():
+        if(pbd_record['currently_attached'] and
+           pbd_record['host'] == host_ref and
+           pbd_record['SR'] in srs_to_unplug):
+            # Unplug in a thread
+            thread = threading.Thread(target=unplug_pbd,
+                                      args=(session, session_lock, pbd_ref,
+                                            pbd_record,
+                                            srs_to_unplug[pbd_record['SR']]))
+            thread.start()
+            unplug_threads.append(thread)
+    for thread in unplug_threads:
+        thread.join()
+
+
+def main():
+    session = XenAPI.xapi_local()
+    session.xenapi.login_with_password('root', '')
+    try:
+        unplug_local_pbds_with_hci_key(session)
+    finally:
+        session.xenapi.session.logout()
+
+
+if __name__ == "__main__":
+    main()
