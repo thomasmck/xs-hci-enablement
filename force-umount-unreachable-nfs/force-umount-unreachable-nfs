@@ -31,7 +31,7 @@ def force_umount(path):
                                stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
     stdout, stderr = process.communicate()
-    if process.returncode == 0:
+    if process.returncode != 0:
         print("%s failed wih rc %d: %s - %s"
               % (cmd, process.returncode, stdout, stderr))
         return
