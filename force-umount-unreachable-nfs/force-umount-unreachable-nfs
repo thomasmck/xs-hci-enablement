@@ -1,0 +1,77 @@
+#!/usr/bin/env python
+
+import socket
+import subprocess
+import sys
+import threading
+
+
+NFS_PORT = 2049
+TIMEOUT_IN_S = 5
+
+
+def force_umount_if_unreachable(mountpoint, address, port, timeout):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((address, port))
+        sock.send('\n')
+        sock.close()
+    except socket.error as reason:
+        print "%s mounted at %s is down: %s" % (address, mountpoint, reason)
+        force_umount(mountpoint)
+        return
+    print "%s mounted at %s is ok" % (address, mountpoint)
+
+
+def force_umount(path):
+    cmd = ['umount', '-f', '-l', path]
+    print "Running %s" % (cmd)
+    process = subprocess.Popen(cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode == 0:
+        print("%s failed wih rc %d: %s - %s"
+              % (cmd, process.returncode, stdout, stderr))
+        return
+    print "Succeded with %s" % (cmd)
+
+
+def main():
+    with open('/proc/mounts') as mounts_file:
+        mounts_lines = mounts_file.readlines()
+    threads = list()
+    for line in mounts_lines:
+        elements = line.split()
+        if len(elements) != 6:
+            sys.stderr.write(
+                "Skipping unrecognised entry in /proc/mounts: %s\n"
+                % (line))
+            continue
+        device = elements[0]
+        mountpoint = elements[1]
+        fstype = elements[2]
+        if fstype != 'nfs':
+            continue
+        elements = device.split(":")
+        if len(elements) != 2:
+            sys.stderr.write(
+                "Skipping unrecognised device in /proc/mounts line: %s\n"
+                % (line))
+            continue
+        address = elements[0]
+        thread = threading.Thread(target=force_umount_if_unreachable,
+                                  args=(mountpoint, address, NFS_PORT,
+                                        TIMEOUT_IN_S,))
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+    print 'All done.'
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
