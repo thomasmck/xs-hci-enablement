@@ -1,13 +1,13 @@
 [Unit]
-Description=PBDs belonging to SRs flagged as HCI
+Description=Force umount of unreachable NFS shares
 Before=xapi-domains.service attach-static-vdis.service
-After=xapi.service remote-fs.target
+After=remote-fs.target
 
 [Service]
 RemainAfterExit=true
 Type=oneshot
 ExecStart=/usr/bin/true
-ExecStop=/usr/bin/hci-unplug-pbds
+ExecStop=/usr/bin/force-umount-unreachable-nfs
 
 [Install]
 WantedBy=multi-user.target

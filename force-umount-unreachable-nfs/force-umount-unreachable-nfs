@@ -1,0 +1,84 @@
+#!/usr/bin/env python
+
+import subprocess
+import sys
+import threading
+
+NFS_TIMEOUT_DECLARE_DEAD_IN_S = 10
+
+
+def check_alive(mount, results):
+    device_split = mount['device'].split(':')
+    if len(device_split) != 2:
+        sys.stderr.write("Skipping unrecognised device: %s\n" %
+                         (mount['device']))
+        return
+    remote_server = device_split[0]
+    cmd = ['rpcinfo', remote_server]
+    process = subprocess.Popen(cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+
+    def mythread():
+        process.communicate()
+
+    thread = threading.Thread(target=mythread)
+    thread.start()
+    thread.join(NFS_TIMEOUT_DECLARE_DEAD_IN_S)
+
+    if thread.is_alive():
+        sys.stderr.write("%s timed out\n" % (cmd))
+        process.kill()
+        thread.join()
+    elif process.returncode != 0:
+        sys.stderr.write("%s failed with rc=%s\n"
+                         % (cmd, process.returncode))
+    else:
+        print "%s is ok" % (mount['device'])
+    results.append(process.returncode)
+
+
+def force_umount(mount):
+    subprocess.call(['umount', '-f', mount['mountpoint']])
+
+
+def main():
+    with open('/proc/mounts') as mounts_file:
+        mounts_lines = mounts_file.readlines()
+    mounts = []
+    for line in mounts_lines:
+        elements = line.split()
+        if len(elements) != 6:
+            sys.stderr.write(
+                "Skipping unrecognised entry in /proc/mounts: %s\n" % (line))
+            continue
+        mount = {'device': elements[0],
+                 'mountpoint': elements[1],
+                 'fstype': elements[2]}
+        if mount['fstype'] != 'nfs':
+            continue
+        mounts.append(mount)
+        mount['rpc_result'] = list()
+        mount['rpc_thread'] = threading.Thread(target=check_alive,
+                                               args=(mount,
+                                                     mount['rpc_result']))
+        mount['rpc_thread'].start()
+
+    for place, mount in enumerate(mounts):
+        mount['rpc_thread'].join()
+        if mount['rpc_result'][0] != 0:
+            print("%s is not ok. Will force umount on %s"
+                  % (mount['device'], mount['mountpoint']))
+            mounts[place]['umount_thread'] = threading.Thread(
+                target=force_umount,
+                args=(mount,))
+            mounts[place]['umount_thread'].start()
+    for mount in mounts:
+        if 'umount_thread' in mount:
+            mount['umount_thread'].join()
+    print 'All done.'
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
